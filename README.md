@@ -1,39 +1,235 @@
 # js_worker_module
 
-#### 介绍
-{**以下是 Gitee 平台说明，您可以替换此简介**
-Gitee 是 OSCHINA 推出的基于 Git 的代码托管平台（同时支持 SVN）。专为开发者提供稳定、高效、安全的云端软件开发协作平台
-无论是个人、团队、或是企业，都能够用 Gitee 实现代码托管、项目管理、协作开发。企业项目请看 [https://gitee.com/enterprises](https://gitee.com/enterprises)}
+#### 一、Worker介绍
 
-#### 软件架构
-软件架构说明
+worker能够让js拥有多线程的能力，通过postMessage完成worker线程与宿主线程通信。
 
+一. Worker介绍
 
-#### 安装教程
+接口介绍
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+1.constructor(scriptURL:string, options? WorkerOptions);
+构造函数 
 
-#### 使用说明
+使用方法:
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
 
-1.  xxxx
-2.  xxxx
-3.  xxxx
+2. postMessage(message:Object, options?:PostMessageOptions): void;
+描述:
+向worker线程发送消息，数据的传输采用结构化算法
 
-#### 参与贡献
+使用方法:
 
-1.  Fork 本仓库
-2.  新建 Feat_xxx 分支
-3.  提交代码
-4.  新建 Pull Request
+示例一
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.postMessage("hello world");
 
+示例二
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+var buffer = new ArrayBuffer(8)
+worker.postMessage(buffer, [buffer]);
 
-#### 特技
+3. on(type:string, listener:EventListener):void;
+描述:
+向worker添加一个事件监听
 
-1.  使用 Readme\_XXX.md 来支持不同的语言，例如 Readme\_en.md, Readme\_zh.md
-2.  Gitee 官方博客 [blog.gitee.com](https://blog.gitee.com)
-3.  你可以 [https://gitee.com/explore](https://gitee.com/explore) 这个地址来了解 Gitee 上的优秀开源项目
-4.  [GVP](https://gitee.com/gvp) 全称是 Gitee 最有价值开源项目，是综合评定出的优秀开源项目
-5.  Gitee 官方提供的使用手册 [https://gitee.com/help](https://gitee.com/help)
-6.  Gitee 封面人物是一档用来展示 Gitee 会员风采的栏目 [https://gitee.com/gitee-stars/](https://gitee.com/gitee-stars/)
+使用方法:
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.on("alert", (e)=>{
+    console.log("worker on...");
+})
+
+4. once(type:string, listener:EventListener):void;
+描述:
+向worker添加一个事件监听, 事件监听只执行一次，一旦出发便会自动删除
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.once("alert", (e)=>{
+    console.log("worker on...");
+})
+
+5. off(type:string, listener?:EventListener):void;
+描述:
+删除worker的事件监听
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.off("alert");
+
+6. terminate():void;
+描述:
+关闭worker线程，终止worker发送消息
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.terminate();
+
+7. removeEventListener(type:string, listener?:EventListener):void;
+描述:
+删除worker的事件监听
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.removeEventListener("alert");
+
+8. dispatchEvent(event: Event):boolean;
+描述:
+分发worker的事件监听
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.dispatchEvent({type:"alert"});
+
+9. removeAllEventListener(): void;
+描述:
+删除worker的所有事件监听
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.removeAllEventListener();
+
+10. onexit?:(code:number)=>void;
+描述:
+worker退出时出发js线程的回调方法
+
+使用方法
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.onexit = function(e) {
+    console.log("onexit...");
+}
+
+11. onerror?:(ev:ErrorEvent)=>void;
+描述:
+worker内部执行js发生异常触发的宿主线程回调
+
+使用方法:
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.onerror = function(e) {
+    console.log("onerror...");
+}
+
+12. onmessage?:(ev:MessageEvent)=>void;
+描述:
+当宿主线程接受到来自其创建的worker消息时，会在worker对象上触发message事件。例如，当worker通过parentPort.postMessage()发送了一条消息
+
+使用方法:
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.onmessage = function(e) {
+    console.log("onmessage...");
+}
+
+13. onmessageerror?:(event:MessageEvent)=>void;
+描述:
+worker对象接收到一条无法序列化的消息时，messageerror事件将在该对象上被触发
+
+使用方法:
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.onmessageerror = function(e) {
+    console.log("onmessageerror...");
+}
+
+二. parentPort介绍
+描述:
+worker线程用于与宿主线程通信的Object对象，通过parentPort接口发送消息给主线程、close接口关闭worker线程
+
+接口介绍
+
+1. parent.postMessage(message:Object, options?:PostMessageOptions): void;
+描述:
+worker向宿主线程发送消息
+
+使用方法:
+main.js
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.postMessage("hello world");
+
+worker.js
+import worker from "@ohos.worker"
+const parentPort = worker.parentPort;
+parentPort.onmessage = function(e) {
+    parentPort.postMessage("hello world from worker.js");
+}
+
+2. parent.close():void
+描述:
+关闭worker线程，终止worker接收消息
+
+使用方法:
+main.js
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.postMessage("hello world");
+
+worker.js
+import worker from "@ohos.worker"
+const parentPort = worker.parentPort;
+parentPort.onmessage = function(e) {
+    parentPort.close();
+}
+
+3. parent.onmessage?:(event:MessageEvent)=>void
+描述:
+parent接口的onmessage属性表示在消息事件发生时要调用的事件处理程序，即当使用worker.postMessage方法将消息发送至worker时
+
+使用方法：
+main.js
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.postMessage("hello world");
+
+worker.js
+import worker from "@ohos.worker"
+const parentPort = worker.parentPort;
+parentPort.onmessage = function(e) {
+    console.log("receive main.js message");
+}
+
+4. parentPort.onerror?:(ev: ErrorEvent)=>void;
+描述:
+worker线程内部执行js发生异常触发的worker回调
+
+使用方法：
+main.js
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.postMessage("hello world");
+
+worker.js
+import worker from "@ohos.worker"
+const parentPort = worker.parentPort;
+parentPort.onerror = function(e) {
+    console.log("onerror...");
+}
+
+5. parentPort.onmessageerror?:(event: MessageEvent)=>void;
+描述:
+当worker接收到一条无法被反序列化的消息时，messageerror将在该事件上触发
+
+使用方法：
+main.js
+import worker from "@ohos.worker"
+const worker = new worker.Worker("workers/worker.js");
+worker.postMessage("hello world");
+
+worker.js
+import worker from "@ohos.worker"
+const parentPort = worker.parentPort;
+parentPort.onmessageerror = function(e) {
+    console.log("onmessageerror...");
+}

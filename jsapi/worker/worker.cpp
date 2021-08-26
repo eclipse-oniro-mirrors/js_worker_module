@@ -142,7 +142,7 @@ void Worker::PublishWorkerOverSignal()
     // post NULL tell main worker is not running
     mainMessageQueue_.EnQueue(NULL);
     uv_async_send(&mainOnMessageSignal_);
-    // mainEngine_->TriggerPostTask();
+    mainEngine_->TriggerPostTask();
 }
 
 void Worker::ExecuteInThread(const void* data)
@@ -360,7 +360,7 @@ void Worker::HandleException(const NativeEngine* engine)
         napi_serialize(env, exception, NapiValueHelp::GetUndefinedValue(env), &data);
         errorQueue_.EnQueue(data);
         uv_async_send(&mainOnErrorSignal_);
-        // mainEngine_->TriggerPostTask();
+        mainEngine_->TriggerPostTask();
     } else {
         HILOG_ERROR("worker:: main engine is nullptr.");
     }
@@ -506,7 +506,7 @@ void Worker::PostMessageToMainInner(MessageDataType data)
     if (mainEngine_ != nullptr) {
         mainMessageQueue_.EnQueue(data);
         uv_async_send(&mainOnMessageSignal_);
-        // mainEngine_->TriggerPostTask();
+        mainEngine_->TriggerPostTask();
     } else {
         HILOG_ERROR("worker:: worker main engine is nullptr.");
     }
