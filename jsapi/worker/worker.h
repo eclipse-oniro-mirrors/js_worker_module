@@ -25,6 +25,7 @@
 #include "native_engine/native_engine.h"
 #include "utils/log.h"
 #include "worker_helper.h"
+#include "worker_init.h"
 #include "worker_runner.h"
 
 namespace OHOS::CCRuntime::Worker {
@@ -101,12 +102,12 @@ public:
             return isEqual;
         }
 
-        napi_env env_;
-        napi_ref ref_;
+        napi_env env_ {nullptr};
+        napi_ref ref_ {nullptr};
     };
     using FindWorkerListener = struct FindWorkerListener;
 
-    Worker(NativeEngine* env, napi_ref thisVar);
+    Worker(napi_env env, napi_ref thisVar);
     ~Worker();
 
     static void MainOnMessage(const uv_async_t* req);
@@ -135,7 +136,7 @@ public:
 
     void StartExecuteInThread(napi_env env, const char* script);
 
-    bool UpdateWorkerState(RunnerState runnerState);
+    bool UpdateWorkerState(RunnerState state);
 
     bool IsRunning() const
     {
@@ -163,57 +164,75 @@ public:
 
     uv_loop_t* GetWorkerLoop() const
     {
-        if (workerEngine_ != nullptr) {
-            return workerEngine_->GetUVLoop();
+        if (workerEnv_ != nullptr) {
+            return reinterpret_cast<NativeEngine*>(workerEnv_)->GetUVLoop();
         }
         return nullptr;
     }
 
-    const NativeEngine* GetWorkerEngine() const
+    napi_env GetWorkerEnv() const
     {
-        return workerEngine_;
+        return workerEnv_;
     }
 
-    void SetWorkerEngine(NativeEngine* engine)
+    void SetWorkerEnv(napi_env workerEnv)
     {
-        workerEngine_ = engine;
+        workerEnv_ = workerEnv;
     }
 
-    const NativeEngine* GetMainEngine() const
+    napi_env GetMainEnv() const
     {
-        return mainEngine_;
+        return mainEnv_;
     }
 
-    const char* GetScript() const
+    std::string GetScript() const
     {
         return script_;
     }
 
-    const char* GetName() const
+    std::string GetName() const
     {
         return name_;
     }
 
     uv_loop_t* GetMainLoop() const
     {
-        if (mainEngine_ != nullptr) {
-            return mainEngine_->GetUVLoop();
+        if (mainEnv_ != nullptr) {
+            return reinterpret_cast<NativeEngine*>(mainEnv_)->GetUVLoop();
         }
         return nullptr;
     }
 
-private:
-    void WorkerOnMessageInner(const NativeEngine* engine);
-    void MainOnMessageInner(const NativeEngine* engine);
-    void MainOnErrorInner(const NativeEngine* engine);
-    void MainOnMessageErrorInner(const NativeEngine* engine);
-    void WorkerOnMessageErrorInner(const NativeEngine* engine);
-    void WorkerOnErrorInner(const NativeEngine* engine, napi_value error);
+    bool IsSameWorkerEnv(napi_env env) const
+    {
+        return workerEnv_ == env;
+    }
 
-    void HandleException(const NativeEngine* engine);
-    bool CallWorkerFunction(const NativeEngine* engine, int argc, const napi_value* argv,
-                            const char* methodName, bool tryCatch);
-    void CallMainFunction(const NativeEngine* engine, int argc, const napi_value* argv, const char* methodName) const;
+    void TriggerPostTask()
+    {
+        if (mainEnv_ != nullptr) {
+            return reinterpret_cast<NativeEngine*>(mainEnv_)->TriggerPostTask();
+        }
+    }
+
+    void Loop()
+    {
+        if (workerEnv_ != nullptr) {
+            return reinterpret_cast<NativeEngine*>(workerEnv_)->Loop(LOOP_DEFAULT);
+        }
+    }
+
+private:
+    void WorkerOnMessageInner();
+    void MainOnMessageInner();
+    void MainOnErrorInner();
+    void MainOnMessageErrorInner();
+    void WorkerOnMessageErrorInner();
+    void WorkerOnErrorInner(napi_value error);
+
+    void HandleException();
+    bool CallWorkerFunction(int argc, const napi_value* argv, const char* methodName, bool tryCatch);
+    void CallMainFunction(int argc, const napi_value* argv, const char* methodName) const;
 
     void HandleEventListeners(napi_env env, napi_value recv, size_t argc, const napi_value* argv, const char* type);
     void TerminateInner();
@@ -228,30 +247,30 @@ private:
     void CloseWorkerCallback();
     void CloseMainCallback() const;
 
-    char* script_ {nullptr};
-    char* name_ {nullptr};
+    std::string script_ {};
+    std::string name_ {};
     ScriptMode scriptMode_ {CLASSIC};
 
-    MessageQueue workerMessageQueue_;
-    MessageQueue mainMessageQueue_;
-    MessageQueue errorQueue_;
+    MessageQueue workerMessageQueue_ {};
+    MessageQueue mainMessageQueue_ {};
+    MessageQueue errorQueue_ {};
 
-    uv_async_t workerOnMessageSignal_;
-    uv_async_t mainOnMessageSignal_;
-    uv_async_t mainOnErrorSignal_;
+    uv_async_t workerOnMessageSignal_ {};
+    uv_async_t mainOnMessageSignal_ {};
+    uv_async_t mainOnErrorSignal_ {};
 
-    std::atomic<RunnerState> runnerState_;
-    WorkerRunner* runner_ {nullptr};
+    std::atomic<RunnerState> runnerState_ {STARTING};
+    std::unique_ptr<WorkerRunner> runner_ {};
 
-    NativeEngine* mainEngine_ {nullptr};
-    NativeEngine* workerEngine_ {nullptr};
+    napi_env mainEnv_ {nullptr};
+    napi_env workerEnv_ {nullptr};
 
     napi_ref workerWrapper_ {nullptr};
     napi_ref parentPort_ {nullptr};
 
-    std::map<std::string, std::list<WorkerListener*>> eventListeners_;
+    std::map<std::string, std::list<WorkerListener*>> eventListeners_ {};
 
-    std::mutex workerAsyncMutex_;
+    std::mutex workerAsyncMutex_ {};
 
     friend class WorkerListener;
 };

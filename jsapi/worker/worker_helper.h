@@ -26,8 +26,8 @@ public:
     static Outer* DereferenceOf(const Inner Outer::*field, const Inner* pointer)
     {
         if (field != nullptr && pointer != nullptr) {
-            uintptr_t fieldOffset = (uintptr_t)&(static_cast<Outer*>(0)->*field);
-            Outer* outPointer = reinterpret_cast<Outer*>((uintptr_t)(pointer) - fieldOffset);
+            auto fieldOffset = reinterpret_cast<uintptr_t>(&(static_cast<Outer*>(0)->*field));
+            auto outPointer = reinterpret_cast<Outer*>(reinterpret_cast<uintptr_t>(pointer) - fieldOffset);
             return outPointer;
         }
         return nullptr;
@@ -69,7 +69,7 @@ public:
 template<typename T>
 class ObjectScope {
 public:
-    ObjectScope(T* data, bool isArray) : data_(data), isArray_(isArray) {}
+    ObjectScope(const T* data, bool isArray) : data_(data), isArray_(isArray) {}
     ~ObjectScope()
     {
         if (data_ == nullptr) {
@@ -83,7 +83,7 @@ public:
     }
 
 private:
-    T* data_;
+    const T* data_;
     bool isArray_;
 };
 } // namespace OHOS::CCRuntime::Worker
