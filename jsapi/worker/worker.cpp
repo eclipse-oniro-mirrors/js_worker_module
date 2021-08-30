@@ -15,16 +15,13 @@
 
 #include "worker.h"
 
-#include "worker_init.h"
-
 namespace OHOS::CCRuntime::Worker {
 const static int MAXWORKERS = 50;
 static std::list<Worker*> g_workers;
 static std::mutex g_workersMutex;
 
-Worker::Worker(NativeEngine* env, napi_ref thisVar)
-    : script_(nullptr), name_(nullptr), scriptMode_(CLASSIC), runnerState_(STARTING), runner_(nullptr),
-      mainEngine_(env), workerEngine_(nullptr), workerWrapper_(thisVar), parentPort_(nullptr)
+Worker::Worker(napi_env env, napi_ref thisVar)
+    : mainEnv_(env), workerWrapper_(thisVar)
 {}
 
 void Worker::StartExecuteInThread(napi_env env, const char* script)
@@ -40,12 +37,12 @@ void Worker::StartExecuteInThread(napi_env env, const char* script)
     uv_async_init(loop, &mainOnErrorSignal_, reinterpret_cast<uv_async_cb>(Worker::MainOnError));
 
     // 2. copy the script
-    script_ = strdup(script);
+    script_ = std::string(script);
     CloseHelp::DeletePointer(script, true);
 
     // 4. create WorkerRunner to Execute
-    if (runner_ == nullptr) {
-        runner_ = new WorkerRunner(WorkerStartCallback(ExecuteInThread, this));
+    if (!runner_) {
+        runner_ = std::make_unique<WorkerRunner>(WorkerStartCallback(ExecuteInThread, this));
     }
     runner_->Execute(); // start a new thread
 }
@@ -78,10 +75,10 @@ void CallWorkCallback(napi_env env, napi_value recv, size_t argc, const napi_val
 
 void Worker::PrepareForWorkerInstance(const Worker* worker)
 {
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(worker->GetWorkerEngine()));
+    napi_env env = worker->GetWorkerEnv();
     // 1. init worker environment
     if (OHOS::CCRuntime::Worker::WorkerCore::initWorkerFunc != NULL) {
-        OHOS::CCRuntime::Worker::WorkerCore::initWorkerFunc(const_cast<NativeEngine*>(worker->GetWorkerEngine()));
+        OHOS::CCRuntime::Worker::WorkerCore::initWorkerFunc(reinterpret_cast<NativeEngine*>(env));
     }
     // 2. Execute script
     if (OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc == NULL) {
@@ -90,7 +87,7 @@ void Worker::PrepareForWorkerInstance(const Worker* worker)
         return;
     }
     std::vector<uint8_t> scriptContent;
-    OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc(std::string(worker->GetScript()), scriptContent);
+    OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc(worker->GetScript(), scriptContent);
     std::string stringContent(scriptContent.begin(), scriptContent.end());
     HILOG_INFO("worker:: stringContent = %{private}s", stringContent.c_str());
     napi_value scriptStringNapiValue = nullptr;
@@ -101,7 +98,7 @@ void Worker::PrepareForWorkerInstance(const Worker* worker)
     if (execScriptResult == nullptr) {
         // An exception occurred when running the script.
         HILOG_ERROR("worker:: run script exception occurs, will handle exception");
-        (const_cast<Worker*>(worker))->HandleException(worker->GetWorkerEngine());
+        (const_cast<Worker*>(worker))->HandleException();
         return;
     }
 
@@ -116,9 +113,10 @@ void Worker::PrepareForWorkerInstance(const Worker* worker)
         const_cast<Worker*>(worker), &closeFuncObj);
     NapiValueHelp::SetNamePropertyInGlobal(env, "close", closeFuncObj);
     // 5. register worker name in DedicatedWorkerGlobalScope
-    if (worker->GetName() != nullptr) {
+    std::string workerName = worker->GetName();
+    if (!workerName.empty()) {
         napi_value nameValue = nullptr;
-        napi_create_string_utf8(env, worker->GetName(), strlen(worker->GetName()), &nameValue);
+        napi_create_string_utf8(env, workerName.c_str(), workerName.length(), &nameValue);
         NapiValueHelp::SetNamePropertyInGlobal(env, "name", nameValue);
     }
 }
@@ -128,11 +126,11 @@ bool Worker::UpdateWorkerState(RunnerState state)
     bool done = false;
     do {
         RunnerState oldState = runnerState_.load(std::memory_order_acquire);
-        if (oldState < state) {
-            done = runnerState_.compare_exchange_strong(oldState, state);
-        } else {
+        if (oldState >= state) {
+            // make sure state sequence is start, running, terminating, terminated
             return false;
         }
+        done = runnerState_.compare_exchange_strong(oldState, state);
     } while (!done);
     return true;
 }
@@ -142,24 +140,23 @@ void Worker::PublishWorkerOverSignal()
     // post NULL tell main worker is not running
     mainMessageQueue_.EnQueue(NULL);
     uv_async_send(&mainOnMessageSignal_);
-    mainEngine_->TriggerPostTask();
+    TriggerPostTask();
 }
 
 void Worker::ExecuteInThread(const void* data)
 {
     auto worker = reinterpret_cast<Worker*>(const_cast<void*>(data));
     // 1. create a runtime, nativeengine
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(worker->GetMainEngine()));
+    napi_env env = worker->GetMainEnv();
     napi_env newEnv = nullptr;
     napi_create_runtime(env, &newEnv);
     if (newEnv == nullptr) {
         napi_throw_error(env, nullptr, "Worker create runtime error");
         return;
     }
-    NativeEngine *workerEngine = reinterpret_cast<NativeEngine*>(newEnv);
     // mark worker env is subThread
-    workerEngine->MarkSubThread();
-    worker->SetWorkerEngine(workerEngine);
+    reinterpret_cast<NativeEngine*>(newEnv)->MarkSubThread();
+    worker->SetWorkerEnv(newEnv);
 
     uv_loop_t* loop = worker->GetWorkerLoop();
     if (loop == nullptr) {
@@ -172,12 +169,11 @@ void Worker::ExecuteInThread(const void* data)
         // 2. add some preparation for the worker
         PrepareForWorkerInstance(worker);
         // 3. start worker loop
-        const NativeEngine* workerEngine = worker->GetWorkerEngine();
-        if (workerEngine == nullptr) {
+        if (worker->GetWorkerEnv() == nullptr) {
             HILOG_ERROR("worker::worker engine is null");
         } else {
             uv_async_send(&worker->workerOnMessageSignal_);
-            const_cast<NativeEngine*>(workerEngine)->Loop(LOOP_DEFAULT);
+            worker->Loop();
         }
     } else {
         worker->CloseInner();
@@ -192,17 +188,16 @@ void Worker::MainOnMessage(const uv_async_t* req)
         HILOG_ERROR("worker::worker is null");
         return;
     }
-    worker->MainOnMessageInner(worker->GetMainEngine());
+    worker->MainOnMessageInner();
 }
 
-void Worker::MainOnErrorInner(const NativeEngine* engine)
+void Worker::MainOnErrorInner()
 {
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
     napi_value callback = nullptr;
     napi_value obj = nullptr;
-    napi_get_reference_value(env, workerWrapper_, &obj);
-    napi_get_named_property(env, obj, "onerror", &callback);
-    bool isCallable = NapiValueHelp::IsCallable(env, callback);
+    napi_get_reference_value(mainEnv_, workerWrapper_, &obj);
+    napi_get_named_property(mainEnv_, obj, "onerror", &callback);
+    bool isCallable = NapiValueHelp::IsCallable(mainEnv_, callback);
     if (!isCallable) {
         HILOG_ERROR("worker:: worker onerror is not Callable");
         return;
@@ -210,14 +205,14 @@ void Worker::MainOnErrorInner(const NativeEngine* engine)
     MessageDataType data;
     while (errorQueue_.DeQueue(&data)) {
         napi_value result = nullptr;
-        napi_deserialize(env, data, &result);
+        napi_deserialize(mainEnv_, data, &result);
 
         napi_value argv[1] = { result };
         napi_value callbackResult = nullptr;
-        napi_call_function(env, obj, callback, 1, argv, &callbackResult);
+        napi_call_function(mainEnv_, obj, callback, 1, argv, &callbackResult);
 
         // handle listeners
-        HandleEventListeners(env, obj, 1, argv, "error");
+        HandleEventListeners(mainEnv_, obj, 1, argv, "error");
     }
 }
 
@@ -228,7 +223,7 @@ void Worker::MainOnError(const uv_async_t* req)
         HILOG_ERROR("worker::worker is null");
         return;
     }
-    worker->MainOnErrorInner(worker->GetMainEngine());
+    worker->MainOnErrorInner();
     worker->TerminateInner();
 }
 
@@ -239,16 +234,15 @@ void Worker::WorkerOnMessage(const uv_async_t* req)
         HILOG_ERROR("worker::worker is null");
         return;
     }
-    worker->WorkerOnMessageInner(worker->GetWorkerEngine());
+    worker->WorkerOnMessageInner();
 }
 
 void Worker::CloseMainCallback() const
 {
     napi_value exitValue = nullptr;
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(GetMainEngine()));
-    napi_create_int32(env, 1, &exitValue);
+    napi_create_int32(mainEnv_, 1, &exitValue);
     napi_value argv[1] = { exitValue };
-    CallMainFunction(GetMainEngine(), 1, argv, "onexit");
+    CallMainFunction(1, argv, "onexit");
 
     std::lock_guard<std::mutex> lock(g_workersMutex);
     std::list<Worker*>::iterator it = std::find(g_workers.begin(), g_workers.end(), this);
@@ -283,15 +277,13 @@ void Worker::HandleEventListeners(napi_env env, napi_value recv, size_t argc, co
     }
 }
 
-void Worker::MainOnMessageInner(const NativeEngine* engine)
+void Worker::MainOnMessageInner()
 {
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
-
     napi_value callback = nullptr;
     napi_value obj = nullptr;
-    napi_get_reference_value(env, workerWrapper_, &obj);
-    napi_get_named_property(env, obj, "onmessage", &callback);
-    bool isCallable = NapiValueHelp::IsCallable(env, callback);
+    napi_get_reference_value(mainEnv_, workerWrapper_, &obj);
+    napi_get_named_property(mainEnv_, obj, "onmessage", &callback);
+    bool isCallable = NapiValueHelp::IsCallable(mainEnv_, callback);
 
     MessageDataType data = nullptr;
     while (mainMessageQueue_.DeQueue(&data)) {
@@ -313,15 +305,15 @@ void Worker::MainOnMessageInner(const NativeEngine* engine)
         }
         // handle data, call worker onMessage function to handle.
         napi_value result = nullptr;
-        napi_deserialize(env, data, &result);
+        napi_deserialize(mainEnv_, data, &result);
         napi_value event = nullptr;
-        napi_create_object(env, &event);
-        napi_set_named_property(env, event, "data", result);
+        napi_create_object(mainEnv_, &event);
+        napi_set_named_property(mainEnv_, event, "data", result);
         napi_value argv[1] = { event };
         napi_value callbackResult = nullptr;
-        napi_call_function(env, obj, callback, 1, argv, &callbackResult);
+        napi_call_function(mainEnv_, obj, callback, 1, argv, &callbackResult);
         // handle listeners.
-        HandleEventListeners(env, obj, 1, argv, "message");
+        HandleEventListeners(mainEnv_, obj, 1, argv, "message");
     }
 }
 
@@ -338,41 +330,39 @@ void Worker::TerminateWorker()
     UpdateWorkerState(TERMINATED);
 }
 
-void Worker::HandleException(const NativeEngine* engine)
+void Worker::HandleException()
 {
     // obj.message, obj.filename, obj.lineno, obj.colno
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
     napi_value exception = nullptr;
-    napi_create_object(env, &exception);
+    napi_create_object(workerEnv_, &exception);
 
-    napi_get_exception_info_for_worker(env, exception);
+    napi_get_exception_info_for_worker(workerEnv_, exception);
 
     // add obj.filename
     napi_value filenameValue = nullptr;
-    napi_create_string_utf8(env, script_, strlen(script_), &filenameValue);
-    napi_set_named_property(env, exception, "filename", filenameValue);
+    napi_create_string_utf8(workerEnv_, script_.c_str(), script_.length(), &filenameValue);
+    napi_set_named_property(workerEnv_, exception, "filename", filenameValue);
 
     // WorkerGlobalScope onerror
-    WorkerOnErrorInner(engine, exception);
+    WorkerOnErrorInner(exception);
 
-    if (mainEngine_ != nullptr) {
+    if (mainEnv_ != nullptr) {
         napi_value data = nullptr;
-        napi_serialize(env, exception, NapiValueHelp::GetUndefinedValue(env), &data);
+        napi_serialize(workerEnv_, exception, NapiValueHelp::GetUndefinedValue(workerEnv_), &data);
         errorQueue_.EnQueue(data);
         uv_async_send(&mainOnErrorSignal_);
-        mainEngine_->TriggerPostTask();
+        TriggerPostTask();
     } else {
         HILOG_ERROR("worker:: main engine is nullptr.");
     }
 }
 
-void Worker::WorkerOnMessageInner(const NativeEngine* engine)
+void Worker::WorkerOnMessageInner()
 {
     if (IsTerminated()) {
         return;
     }
     MessageDataType data = nullptr;
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
     while (workerMessageQueue_.DeQueue(&data)) {
         if (data == NULL || IsTerminating()) {
             HILOG_INFO("worker:: worker reveive terminate signal");
@@ -380,17 +370,17 @@ void Worker::WorkerOnMessageInner(const NativeEngine* engine)
             return;
         }
         napi_value result = nullptr;
-        napi_status status = napi_deserialize(env, data, &result);
+        napi_status status = napi_deserialize(workerEnv_, data, &result);
         if (status != napi_ok || result == nullptr) {
-            WorkerOnMessageErrorInner(workerEngine_);
+            WorkerOnMessageErrorInner();
             return;
         }
 
         napi_value event = nullptr;
-        napi_create_object(env, &event);
-        napi_set_named_property(env, event, "data", result);
+        napi_create_object(workerEnv_, &event);
+        napi_set_named_property(workerEnv_, event, "data", result);
         napi_value argv[1] = { event };
-        bool callFeedback = CallWorkerFunction(engine, 1, argv, "onmessage", true);
+        bool callFeedback = CallWorkerFunction(1, argv, "onmessage", true);
         if (!callFeedback) {
             // onmessage is not function, exit the loop directly.
             return;
@@ -398,19 +388,18 @@ void Worker::WorkerOnMessageInner(const NativeEngine* engine)
     }
 }
 
-void Worker::MainOnMessageErrorInner(const NativeEngine* engine)
+void Worker::MainOnMessageErrorInner()
 {
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
     napi_value obj = nullptr;
-    napi_get_reference_value(env, workerWrapper_, &obj);
-    CallMainFunction(engine, 0, nullptr, "onmessageerror");
+    napi_get_reference_value(mainEnv_, workerWrapper_, &obj);
+    CallMainFunction(0, nullptr, "onmessageerror");
     // handle listeners
-    HandleEventListeners(env, obj, 0, nullptr, "messageerror");
+    HandleEventListeners(mainEnv_, obj, 0, nullptr, "messageerror");
 }
 
-void Worker::WorkerOnMessageErrorInner(const NativeEngine* engine)
+void Worker::WorkerOnMessageErrorInner()
 {
-    CallWorkerFunction(engine, 0, nullptr, "onmessageerror", true);
+    CallWorkerFunction(0, nullptr, "onmessageerror", true);
 }
 
 napi_value Worker::PostMessage(napi_env env, napi_callback_info cbinfo)
@@ -449,7 +438,7 @@ napi_value Worker::PostMessage(napi_env env, napi_callback_info cbinfo)
         serializeStatus = napi_serialize(env, argv[0], NapiValueHelp::GetUndefinedValue(env), &data);
     }
     if (serializeStatus != napi_ok || data == nullptr) {
-        worker->MainOnMessageErrorInner(worker->GetMainEngine());
+        worker->MainOnMessageErrorInner();
         return nullptr;
     }
 
@@ -503,10 +492,10 @@ napi_value Worker::PostMessageToMain(napi_env env, napi_callback_info cbinfo)
 
 void Worker::PostMessageToMainInner(MessageDataType data)
 {
-    if (mainEngine_ != nullptr) {
+    if (mainEnv_ != nullptr) {
         mainMessageQueue_.EnQueue(data);
         uv_async_send(&mainOnMessageSignal_);
-        mainEngine_->TriggerPostTask();
+        TriggerPostTask();
     } else {
         HILOG_ERROR("worker:: worker main engine is nullptr.");
     }
@@ -556,32 +545,24 @@ void Worker::TerminateInner()
 
 Worker::~Worker()
 {
-    CloseHelp::DeletePointer(script_, true);
-    script_ = nullptr;
-    CloseHelp::DeletePointer(name_, true);
-    name_ = nullptr;
-    napi_env env = reinterpret_cast<napi_env>(mainEngine_);
-    workerMessageQueue_.Clear(env);
-    mainMessageQueue_.Clear(env);
+    workerMessageQueue_.Clear(mainEnv_);
+    mainMessageQueue_.Clear(workerEnv_);
     // set thisVar's nativepointer is null
     napi_value thisVar = nullptr;
-    napi_get_reference_value(env, workerWrapper_, &thisVar);
+    napi_get_reference_value(mainEnv_, workerWrapper_, &thisVar);
     Worker* worker = nullptr;
-    napi_remove_wrap(env, thisVar, (void**)&worker);
+    napi_remove_wrap(mainEnv_, thisVar, (void**)&worker);
 
-    napi_delete_reference(env, workerWrapper_);
+    napi_delete_reference(mainEnv_, workerWrapper_);
     workerWrapper_ = nullptr;
 
-    napi_delete_reference(env, parentPort_);
+    napi_delete_reference(mainEnv_, parentPort_);
     parentPort_ = nullptr;
 
-    CloseHelp::DeletePointer(runner_, false);
-    runner_ = nullptr;
+    CloseHelp::DeletePointer(reinterpret_cast<NativeEngine*>(workerEnv_), false);
+    workerEnv_ = nullptr;
 
-    CloseHelp::DeletePointer(workerEngine_, false);
-    workerEngine_ = nullptr;
-
-    mainEngine_ = nullptr;
+    mainEnv_ = nullptr;
     RemoveAllListenerInner();
 }
 
@@ -612,8 +593,7 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
     }
 
     // 2. new worker instance
-    NativeEngine* engine = reinterpret_cast<NativeEngine*>(env);
-    Worker* worker = new Worker(engine, nullptr);
+    Worker* worker = new Worker(env, nullptr);
     g_workers.push_back(worker);
 
     if (argc > 1 && NapiValueHelp::IsObject(args[1])) {
@@ -625,7 +605,7 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
                 napi_throw_error(env, nullptr, "worker name create error, please check.");
                 return nullptr;
             }
-            worker->name_ = strdup(nameStr);
+            worker->name_ = std::string(nameStr);
             CloseHelp::DeletePointer(nameStr, true);
         }
 
@@ -656,7 +636,7 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
         }
     }
 
-    // 3. execute StartExecuteInThread;
+    // 3. execute in thread
     char* script = NapiValueHelp::GetString(env, args[0]);
     if (script == nullptr) {
         napi_throw_error(env, nullptr, "worker script create error, please check.");
@@ -713,9 +693,9 @@ napi_value Worker::AddListener(napi_env env, napi_callback_info cbinfo, Listener
 
     auto listener = new WorkerListener(worker, mode);
     if (mode == ONCE && argc > WORKERPARAMNUM) {
-        if (NapiValueHelp::IsObject(args[2])) {
+        if (NapiValueHelp::IsObject(args[WORKERPARAMNUM])) {
             napi_value onceValue = nullptr;
-            napi_get_named_property(env, args[2], "once", &onceValue);
+            napi_get_named_property(env, args[WORKERPARAMNUM], "once", &onceValue);
             bool isOnce = false;
             napi_get_value_bool(env, onceValue, &isOnce);
             if (!isOnce) {
@@ -740,7 +720,7 @@ bool Worker::WorkerListener::operator==(const WorkerListener& listener) const
     if (listener.worker_ == nullptr) {
         return false;
     }
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(listener.worker_->GetMainEngine()));
+    napi_env env = listener.worker_->GetMainEnv();
     napi_ref ref = listener.GetCallback();
     napi_value obj = nullptr;
     napi_get_reference_value(env, ref, &obj);
@@ -781,8 +761,8 @@ void Worker::RemoveListenerInner(napi_env env, const char* type, napi_ref callba
         std::list<WorkerListener*>::iterator it =
             std::find_if(listenerList.begin(), listenerList.end(), Worker::FindWorkerListener(env, callback));
         if (it != listenerList.end()) {
-            listenerList.erase(it);
             CloseHelp::DeletePointer(*it, false);
+            listenerList.erase(it);
         }
     } else {
         for (auto it = listenerList.begin(); it != listenerList.end(); it++) {
@@ -967,10 +947,9 @@ napi_value Worker::InitWorker(napi_env env, napi_value exports)
             sizeof(properties) / sizeof(properties[0]), properties, &workerClazz);
         napi_set_named_property(env, exports, "Worker", workerClazz);
     } else {
-        NativeEngine *engine = reinterpret_cast<NativeEngine*>(env);
         Worker *worker = nullptr;
         for (auto item = g_workers.begin(); item != g_workers.end(); item++) {
-            if ((*item)->GetWorkerEngine() == engine) {
+            if ((*item)->IsSameWorkerEnv(env)) {
                 worker = *item;
             }
         }
@@ -983,11 +962,10 @@ napi_value Worker::InitWorker(napi_env env, napi_value exports)
             DECLARE_NAPI_FUNCTION_WITH_DATA("postMessage", PostMessageToMain, worker),
             DECLARE_NAPI_FUNCTION_WITH_DATA("close", CloseWorker, worker),
         };
-        const char propertyName[] = "parentPort";
         napi_value parentPortObj = nullptr;
         napi_create_object(env, &parentPortObj);
         napi_define_properties(env, parentPortObj, sizeof(properties) / sizeof(properties[0]), properties);
-        napi_set_named_property(env, exports, propertyName, parentPortObj);
+        napi_set_named_property(env, exports, "parentPort", parentPortObj);
 
         // register worker parentPort.
         napi_create_reference(env, parentPortObj, 1, &worker->parentPort_);
@@ -995,61 +973,51 @@ napi_value Worker::InitWorker(napi_env env, napi_value exports)
     return exports;
 }
 
-void Worker::WorkerOnErrorInner(const NativeEngine* engine, napi_value error)
+void Worker::WorkerOnErrorInner(napi_value error)
 {
     napi_value argv[1] = { error };
-    CallWorkerFunction(engine, 1, argv, "onerror", false);
+    CallWorkerFunction(1, argv, "onerror", false);
 }
 
-bool Worker::CallWorkerFunction(
-    const NativeEngine* engine, int argc, const napi_value* argv, const char* methodName, bool tryCatch)
+bool Worker::CallWorkerFunction(int argc, const napi_value* argv, const char* methodName, bool tryCatch)
 {
-    if (engine == nullptr) {
-        return false;
-    }
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
-    napi_value callback = NapiValueHelp::GetNamePropertyInParentPort(env, parentPort_, methodName);
-    bool isCallable = NapiValueHelp::IsCallable(env, callback);
+    napi_value callback = NapiValueHelp::GetNamePropertyInParentPort(workerEnv_, parentPort_, methodName);
+    bool isCallable = NapiValueHelp::IsCallable(workerEnv_, callback);
     if (!isCallable) {
         HILOG_ERROR("worker:: WorkerGlobalScope %{public}s is not Callable", methodName);
         return false;
     }
-    napi_value undefinedValue = NapiValueHelp::GetUndefinedValue(env);
+    napi_value undefinedValue = NapiValueHelp::GetUndefinedValue(workerEnv_);
     napi_value callbackResult = nullptr;
-    napi_call_function(env, undefinedValue, callback, argc, argv, &callbackResult);
+    napi_call_function(workerEnv_, undefinedValue, callback, argc, argv, &callbackResult);
     if (tryCatch && callbackResult == nullptr) {
         // handle exception
-        HandleException(GetWorkerEngine());
+        HandleException();
     }
     return true;
 }
 
 void Worker::CloseWorkerCallback()
 {
-    CallWorkerFunction(GetWorkerEngine(), 0, nullptr, "onclose", true);
+    CallWorkerFunction(0, nullptr, "onclose", true);
     // off worker inited environment
     if (OHOS::CCRuntime::Worker::WorkerCore::offWorkerFunc != NULL) {
-        OHOS::CCRuntime::Worker::WorkerCore::offWorkerFunc(const_cast<NativeEngine*>(GetWorkerEngine()));
+        OHOS::CCRuntime::Worker::WorkerCore::offWorkerFunc(reinterpret_cast<NativeEngine*>(workerEnv_));
     }
 }
 
-void Worker::CallMainFunction(
-    const NativeEngine* engine, int argc, const napi_value* argv, const char* methodName) const
+void Worker::CallMainFunction(int argc, const napi_value* argv, const char* methodName) const
 {
-    if (engine == nullptr) {
-        return;
-    }
-    napi_env env = reinterpret_cast<napi_env>(const_cast<NativeEngine*>(engine));
     napi_value callback = nullptr;
     napi_value obj = nullptr;
-    napi_get_reference_value(env, workerWrapper_, &obj);
-    napi_get_named_property(env, obj, methodName, &callback);
-    bool isCallable = NapiValueHelp::IsCallable(env, callback);
+    napi_get_reference_value(mainEnv_, workerWrapper_, &obj);
+    napi_get_named_property(mainEnv_, obj, methodName, &callback);
+    bool isCallable = NapiValueHelp::IsCallable(mainEnv_, callback);
     if (!isCallable) {
         HILOG_ERROR("worker:: worker %{public}s is not Callable", methodName);
         return;
     }
     napi_value callbackResult = nullptr;
-    napi_call_function(env, obj, callback, argc, argv, &callbackResult);
+    napi_call_function(mainEnv_, obj, callback, argc, argv, &callbackResult);
 }
 } // namespace OHOS::CCRuntime::Worker
