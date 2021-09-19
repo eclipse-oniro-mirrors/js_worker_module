@@ -88,16 +88,9 @@ void Worker::PrepareForWorkerInstance(const Worker* worker)
     }
     std::vector<uint8_t> scriptContent;
     OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc(worker->GetScript(), scriptContent);
-
+    HILOG_INFO("worker:: script content size is %{public}d", (int)scriptContent.size());
     napi_value execScriptResult = nullptr;
-#ifdef USE_ARK_ENGINE
     napi_run_buffer_script(env, scriptContent, &execScriptResult);
-#else
-    napi_value scriptStringNapiValue = nullptr;
-    napi_create_string_utf8(
-        env, reinterpret_cast<char*>(scriptContent.data()), scriptContent.size(), &scriptStringNapiValue);
-    napi_run_script(env, scriptStringNapiValue, &execScriptResult);
-#endif
     if (execScriptResult == nullptr) {
         // An exception occurred when running the script.
         HILOG_ERROR("worker:: run script exception occurs, will handle exception");
