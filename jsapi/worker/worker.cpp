@@ -88,13 +88,9 @@ void Worker::PrepareForWorkerInstance(const Worker* worker)
     }
     std::vector<uint8_t> scriptContent;
     OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc(worker->GetScript(), scriptContent);
-    std::string stringContent(scriptContent.begin(), scriptContent.end());
-    HILOG_INFO("worker:: stringContent = %{private}s", stringContent.c_str());
-    napi_value scriptStringNapiValue = nullptr;
-    napi_create_string_utf8(env, stringContent.c_str(), stringContent.length(), &scriptStringNapiValue);
-
+    HILOG_INFO("worker:: script content size is %{public}d", (int)scriptContent.size());
     napi_value execScriptResult = nullptr;
-    napi_run_script(env, scriptStringNapiValue, &execScriptResult);
+    napi_run_buffer_script(env, scriptContent, &execScriptResult);
     if (execScriptResult == nullptr) {
         // An exception occurred when running the script.
         HILOG_ERROR("worker:: run script exception occurs, will handle exception");
