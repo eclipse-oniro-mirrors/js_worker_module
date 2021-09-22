@@ -261,9 +261,8 @@ void Worker::HandleEventListeners(napi_env env, napi_value recv, size_t argc, co
     std::list<WorkerListener*>::iterator it = listeners.begin();
     while (it != listeners.end()) {
         WorkerListener* data = *it++;
-        napi_ref callback = data->GetCallback();
         napi_value callbackObj = nullptr;
-        napi_get_reference_value(env, callback, &callbackObj);
+        napi_get_reference_value(env, data->callback_, &callbackObj);
         napi_value callbackResult = nullptr;
         napi_call_function(env, recv, callbackObj, argc, argv, &callbackResult);
         if (!data->NextIsAvailable()) {
@@ -717,9 +716,8 @@ bool Worker::WorkerListener::operator==(const WorkerListener& listener) const
         return false;
     }
     napi_env env = listener.worker_->GetMainEnv();
-    napi_ref ref = listener.GetCallback();
     napi_value obj = nullptr;
-    napi_get_reference_value(env, ref, &obj);
+    napi_get_reference_value(env, listener.callback_, &obj);
 
     napi_value compareObj = nullptr;
     napi_get_reference_value(env, callback_, &compareObj);
@@ -737,7 +735,7 @@ void Worker::AddListenerInner(napi_env env, const char* type, const WorkerListen
     } else {
         std::list<WorkerListener*>& listenerList = iter->second;
         std::list<WorkerListener*>::iterator it = std::find_if(
-            listenerList.begin(), listenerList.end(), Worker::FindWorkerListener(env, listener->GetCallback()));
+            listenerList.begin(), listenerList.end(), Worker::FindWorkerListener(env, listener->callback_));
         if (it != listenerList.end()) {
             return;
         }
