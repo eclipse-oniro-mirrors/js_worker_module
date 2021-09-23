@@ -39,8 +39,7 @@ public:
 
     enum ScriptMode { CLASSIC, MODULE };
 
-    class WorkerListener {
-    public:
+    struct WorkerListener {
         WorkerListener() : callback_(nullptr), worker_(nullptr), mode_(PERMANENT) {}
 
         explicit WorkerListener(Worker* worker) : callback_(nullptr), worker_(worker), mode_(PERMANENT) {}
@@ -58,16 +57,6 @@ public:
             return mode_ != ONCE;
         }
 
-        ListenerMode GetListenerMode() const
-        {
-            return mode_;
-        }
-
-        napi_ref GetCallback() const
-        {
-            return callback_;
-        }
-
         void SetCallable(napi_env env, napi_value value)
         {
             napi_create_reference(env, value, 1, &callback_);
@@ -80,7 +69,6 @@ public:
 
         bool operator==(const WorkerListener& listener) const;
 
-    private:
         napi_ref callback_ {NULL};
         Worker* worker_ {nullptr};
         ListenerMode mode_ {PERMANENT};
@@ -91,9 +79,8 @@ public:
 
         bool operator()(const WorkerListener* listener) const
         {
-            napi_ref compareRef = listener->GetCallback();
             napi_value compareObj = nullptr;
-            napi_get_reference_value(env_, compareRef, &compareObj);
+            napi_get_reference_value(env_, listener->callback_, &compareObj);
 
             napi_value obj = nullptr;
             napi_get_reference_value(env_, ref_, &obj);
@@ -105,7 +92,6 @@ public:
         napi_env env_ {nullptr};
         napi_ref ref_ {nullptr};
     };
-    using FindWorkerListener = struct FindWorkerListener;
 
     Worker(napi_env env, napi_ref thisVar);
     ~Worker();
@@ -170,19 +156,9 @@ public:
         return nullptr;
     }
 
-    napi_env GetWorkerEnv() const
-    {
-        return workerEnv_;
-    }
-
     void SetWorkerEnv(napi_env workerEnv)
     {
         workerEnv_ = workerEnv;
-    }
-
-    napi_env GetMainEnv() const
-    {
-        return mainEnv_;
     }
 
     std::string GetScript() const
@@ -247,6 +223,16 @@ private:
     void CloseWorkerCallback();
     void CloseMainCallback() const;
 
+    napi_env GetMainEnv() const
+    {
+        return mainEnv_;
+    }
+
+    napi_env GetWorkerEnv() const
+    {
+        return workerEnv_;
+    }
+
     std::string script_ {};
     std::string name_ {};
     ScriptMode scriptMode_ {CLASSIC};
@@ -271,8 +257,6 @@ private:
     std::map<std::string, std::list<WorkerListener*>> eventListeners_ {};
 
     std::mutex workerAsyncMutex_ {};
-
-    friend class WorkerListener;
 };
 } // namespace OHOS::CCRuntime::Worker
 #endif // FOUNDATION_CCRUNTIME_JSAPI_WORKER_H
