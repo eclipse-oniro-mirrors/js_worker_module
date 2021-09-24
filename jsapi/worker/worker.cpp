@@ -69,7 +69,7 @@ void CallWorkCallback(napi_env env, napi_value recv, size_t argc, const napi_val
     napi_get_named_property(env, recv, type, &callback);
     if (NapiValueHelp::IsCallable(env, callback)) {
         napi_value callbackResult = nullptr;
-        napi_call_function(env, recv, callback, 1, argv, &callbackResult);
+        napi_call_function(env, recv, callback, argc, argv, &callbackResult);
     }
 }
 
