@@ -34,7 +34,7 @@ public:
     static const int8_t WORKERPARAMNUM = 2;
 
     enum RunnerState { STARTING, RUNNING, TERMINATEING, TERMINATED };
-
+    enum MainState { ACTIVE, INACTIVE };
     enum ListenerMode { ONCE, PERMANENT };
 
     enum ScriptMode { CLASSIC, MODULE };
@@ -100,7 +100,7 @@ public:
     static void MainOnError(const uv_async_t* req);
     static void WorkerOnMessage(const uv_async_t* req);
     static void ExecuteInThread(const void* data);
-    static void PrepareForWorkerInstance(const Worker* worker);
+    static bool PrepareForWorkerInstance(const Worker* worker);
 
     static napi_value PostMessage(napi_env env, napi_callback_info cbinfo);
     static napi_value PostMessageToMain(napi_env env, napi_callback_info cbinfo);
@@ -120,9 +120,18 @@ public:
     static napi_value WorkerConstructor(napi_env env, napi_callback_info cbinfo);
     static napi_value InitWorker(napi_env env, napi_value exports);
 
+    static napi_value CancelTask(napi_env env, napi_callback_info cbinfo);
+    static napi_value ParentPortCancelTask(napi_env env, napi_callback_info cbinfo);
+
+    static napi_value ParentPortAddEventListener(napi_env env, napi_callback_info cbinfo);
+    static napi_value ParentPortRemoveAllListener(napi_env env, napi_callback_info cbinfo);
+    static napi_value ParentPortDispatchEvent(napi_env env, napi_callback_info cbinfo);
+    static napi_value ParentPortRemoveEventListener(napi_env env, napi_callback_info cbinfo);
+
     void StartExecuteInThread(napi_env env, const char* script);
 
     bool UpdateWorkerState(RunnerState state);
+    bool UpdateMainState(MainState state);
 
     bool IsRunning() const
     {
@@ -179,9 +188,13 @@ public:
         return nullptr;
     }
 
-    bool IsSameWorkerEnv(napi_env env) const
+    bool ClearWorkerTasks()
     {
-        return workerEnv_ == env;
+        if (mainEnv_ != nullptr) {
+            workerMessageQueue_.Clear(mainEnv_);
+            return true;
+        }
+        return false;
     }
 
     void TriggerPostTask()
@@ -191,10 +204,20 @@ public:
         }
     }
 
+    bool MainIsStop() const
+    {
+        return mainState_.load(std::memory_order_acquire) == INACTIVE;
+    }
+
+    bool IsSameWorkerEnv(napi_env env) const
+    {
+        return workerEnv_ == env;
+    }
+
     void Loop()
     {
         if (workerEnv_ != nullptr) {
-            return reinterpret_cast<NativeEngine*>(workerEnv_)->Loop(LOOP_DEFAULT);
+            reinterpret_cast<NativeEngine*>(workerEnv_)->Loop(LOOP_DEFAULT);
         }
     }
 
@@ -211,6 +234,8 @@ private:
     void CallMainFunction(int argc, const napi_value* argv, const char* methodName) const;
 
     void HandleEventListeners(napi_env env, napi_value recv, size_t argc, const napi_value* argv, const char* type);
+    void ParentPortHandleEventListeners(napi_env env, napi_value recv,
+                                        size_t argc, const napi_value* argv, const char* type);
     void TerminateInner();
 
     void PostMessageInner(MessageDataType data);
@@ -222,6 +247,13 @@ private:
     void PublishWorkerOverSignal();
     void CloseWorkerCallback();
     void CloseMainCallback() const;
+
+    void ReleaseWorkerThreadContent();
+    void ReleaseMainThreadContent();
+
+    void ParentPortAddListenerInner(napi_env env, const char* type, const WorkerListener* listener);
+    void ParentPortRemoveAllListenerInner();
+    void ParentPortRemoveListenerInner(napi_env env, const char* type, napi_ref callback);
 
     napi_env GetMainEnv() const
     {
@@ -246,6 +278,7 @@ private:
     uv_async_t mainOnErrorSignal_ {};
 
     std::atomic<RunnerState> runnerState_ {STARTING};
+    std::atomic<MainState> mainState_ {ACTIVE};
     std::unique_ptr<WorkerRunner> runner_ {};
 
     napi_env mainEnv_ {nullptr};
@@ -255,8 +288,9 @@ private:
     napi_ref parentPort_ {nullptr};
 
     std::map<std::string, std::list<WorkerListener*>> eventListeners_ {};
+    std::map<std::string, std::list<WorkerListener*>> parentPortEventListeners_ {};
 
-    std::mutex workerAsyncMutex_ {};
+    std::recursive_mutex liveStatusLock_ {};
 };
 } // namespace OHOS::CCRuntime::Worker
 #endif // FOUNDATION_CCRUNTIME_JSAPI_WORKER_H
