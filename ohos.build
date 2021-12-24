@@ -7,19 +7,7 @@
         "phone"
       ],
       "module_list": [
-        "//base/compileruntime/js_worker_module/jsapi:jsapi_packages",
-        "//base/compileruntime/js_worker_module/jsapi/interfaces/innerkits/worker_core:jsapi_init_packages"
-      ],
-      "inner_kits": [
-        {
-          "header": {
-            "header_base": "//base/compileruntime/js_worker_module/jsapi/interfaces/innerkits/worker_core/include",
-            "header_files": [
-              "worker_init.h"
-            ]
-          },
-          "name": "//base/compileruntime/js_worker_module/jsapi/interfaces/innerkits/worker_core:worker_init"
-        }
+        "//base/compileruntime/js_worker_module/jsapi:jsapi_packages"
       ],
       "test_list": [
       ]
