@@ -14,10 +14,7 @@
 import("//build/ohos.gni")
 
 ohos_shared_library("worker") {
-  include_dirs = [
-    "//base/compileruntime/js_worker_module/jsapi/worker",
-    "//base/compileruntime/js_worker_module/jsapi/interfaces/innerkits/worker_core/include",
-  ]
+  include_dirs = [ "//base/compileruntime/js_worker_module/jsapi/worker" ]
 
   sources = [
     "worker/message_queue.cpp",
@@ -29,7 +26,6 @@ ohos_shared_library("worker") {
   ]
 
   deps = [
-    "//base/compileruntime/js_worker_module/jsapi/interfaces/innerkits/worker_core:worker_init",
     "//foundation/ace/napi:ace_napi",
     "//foundation/ace/napi:ace_napi_quickjs",
   ]
