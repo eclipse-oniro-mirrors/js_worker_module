@@ -73,47 +73,46 @@ void CallWorkCallback(napi_env env, napi_value recv, size_t argc, const napi_val
     }
 }
 
-bool Worker::PrepareForWorkerInstance(const Worker* worker)
+bool Worker::PrepareForWorkerInstance()
 {
-    napi_env env = worker->GetWorkerEnv();
-    // 1. init worker environment
-    if (OHOS::CCRuntime::Worker::WorkerCore::initWorkerFunc != NULL) {
-        OHOS::CCRuntime::Worker::WorkerCore::initWorkerFunc(reinterpret_cast<NativeEngine*>(env));
-    }
-    // 2. Execute script
-    if (OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc == NULL) {
-        HILOG_ERROR("worker::getAssertFunc is null");
-        napi_throw_error(env, nullptr, "worker::getAssertFunc is null");
-        return false;
-    }
     std::vector<uint8_t> scriptContent;
-    OHOS::CCRuntime::Worker::WorkerCore::getAssertFunc(worker->GetScript(), scriptContent);
-    HILOG_INFO("worker:: script content size is %{public}d", (int)scriptContent.size());
+    {
+        std::lock_guard<std::recursive_mutex> lock(liveStatusLock_);
+        if (MainIsStop()) {
+            return false;
+        }
+        // 1. init worker async func
+        auto workerEngine = reinterpret_cast<NativeEngine*>(workerEnv_);
+        auto mainEngine = reinterpret_cast<NativeEngine*>(mainEnv_);
+        if (!mainEngine->CallWorkerAsyncWorkFunc(workerEngine)) {
+            HILOG_ERROR("worker:: CallWorkerAsyncWorkFunc error");
+        }
+        // 2. init worker environment
+        if (!mainEngine->CallInitWorkerFunc(workerEngine)) {
+            HILOG_ERROR("worker:: CallInitWorkerFunc error");
+            return false;
+        }
+        // 3. get uril content
+        if (!mainEngine->CallGetAssetFunc(script_, scriptContent)) {
+            HILOG_ERROR("worker:: CallGetAssetFunc error");
+            return false;
+        }
+    }
+    HILOG_INFO("worker:: stringContent size is %{public}zu", scriptContent.size());
     napi_value execScriptResult = nullptr;
-    napi_run_buffer_script(env, scriptContent, &execScriptResult);
+    napi_run_buffer_script(workerEnv_, scriptContent, &execScriptResult);
     if (execScriptResult == nullptr) {
         // An exception occurred when running the script.
         HILOG_ERROR("worker:: run script exception occurs, will handle exception");
-        (const_cast<Worker*>(worker))->HandleException();
+        HandleException();
         return false;
     }
 
-    // 3. register postMessage in DedicatedWorkerGlobalScope
-    napi_value postFunctionObj = nullptr;
-    napi_create_function(env, "postMessage", NAPI_AUTO_LENGTH, Worker::PostMessageToMain,
-        const_cast<Worker*>(worker), &postFunctionObj);
-    NapiValueHelp::SetNamePropertyInGlobal(env, "postMessage", postFunctionObj);
-    // 4. register close in DedicatedWorkerGlobalScope
-    napi_value closeFuncObj = nullptr;
-    napi_create_function(env, "close", NAPI_AUTO_LENGTH, Worker::CloseWorker,
-        const_cast<Worker*>(worker), &closeFuncObj);
-    NapiValueHelp::SetNamePropertyInGlobal(env, "close", closeFuncObj);
-    // 5. register worker name in DedicatedWorkerGlobalScope
-    std::string workerName = worker->GetName();
-    if (!workerName.empty()) {
+    // 4. register worker name in DedicatedWorkerGlobalScope
+    if (!name_.empty()) {
         napi_value nameValue = nullptr;
-        napi_create_string_utf8(env, workerName.c_str(), workerName.length(), &nameValue);
-        NapiValueHelp::SetNamePropertyInGlobal(env, "name", nameValue);
+        napi_create_string_utf8(workerEnv_, name_.c_str(), name_.length(), &nameValue);
+        NapiValueHelp::SetNamePropertyInGlobal(workerEnv_, "name", nameValue);
     }
     return true;
 }
@@ -152,7 +151,6 @@ void Worker::PublishWorkerOverSignal()
     if (!MainIsStop()) {
         mainMessageQueue_.EnQueue(NULL);
         uv_async_send(&mainOnMessageSignal_);
-        TriggerPostTask();
     }
 }
 
@@ -185,7 +183,7 @@ void Worker::ExecuteInThread(const void* data)
     }
 
     // 2. add some preparation for the worker
-    if (PrepareForWorkerInstance(worker)) {
+    if (worker->PrepareForWorkerInstance()) {
         uv_async_init(loop, &worker->workerOnMessageSignal_, reinterpret_cast<uv_async_cb>(Worker::WorkerOnMessage));
         worker->UpdateWorkerState(RUNNING);
         // in order to invoke worker send before subThread start
@@ -315,10 +313,7 @@ void Worker::MainOnMessageInner()
         // receive close signal.
         if (data == nullptr) {
             HILOG_INFO("worker:: worker received close signal");
-            uv_unref((uv_handle_t*)&mainOnMessageSignal_);
             uv_close((uv_handle_t*)&mainOnMessageSignal_, nullptr);
-
-            uv_unref((uv_handle_t*)&mainOnErrorSignal_);
             uv_close((uv_handle_t*)&mainOnErrorSignal_, nullptr);
             CloseMainCallback();
             return;
@@ -330,7 +325,11 @@ void Worker::MainOnMessageInner()
         }
         // handle data, call worker onMessage function to handle.
         napi_value result = nullptr;
-        napi_deserialize(mainEnv_, data, &result);
+        napi_status status = napi_deserialize(mainEnv_, data, &result);
+        if (status != napi_ok || result == nullptr) {
+            MainOnMessageErrorInner();
+            return;
+        }
         napi_value event = nullptr;
         napi_create_object(mainEnv_, &event);
         napi_set_named_property(mainEnv_, event, "data", result);
@@ -378,7 +377,6 @@ void Worker::HandleException()
             if (!MainIsStop()) {
                 errorQueue_.EnQueue(data);
                 uv_async_send(&mainOnErrorSignal_);
-                TriggerPostTask();
             }
         }
     } else {
@@ -506,14 +504,20 @@ napi_value Worker::PostMessageToMain(napi_env env, napi_callback_info cbinfo)
     }
 
     napi_value data = nullptr;
+    napi_status serializeStatus = napi_ok;
     if (argc >= WORKERPARAMNUM) {
         if (!NapiValueHelp::IsArray(argv[1])) {
             napi_throw_error(env, nullptr, "Transfer list must be an Array");
             return nullptr;
         }
-        napi_serialize(env, argv[0], argv[1], &data);
+        serializeStatus = napi_serialize(env, argv[0], argv[1], &data);
     } else {
-        napi_serialize(env, argv[0], NapiValueHelp::GetUndefinedValue(env), &data);
+        serializeStatus = napi_serialize(env, argv[0], NapiValueHelp::GetUndefinedValue(env), &data);
+    }
+
+    if (serializeStatus != napi_ok || data == nullptr) {
+        worker->WorkerOnMessageErrorInner();
+        return nullptr;
     }
 
     if (data != nullptr) {
@@ -529,7 +533,6 @@ void Worker::PostMessageToMainInner(MessageDataType data)
     if (mainEnv_ != nullptr && !MainIsStop()) {
         mainMessageQueue_.EnQueue(data);
         uv_async_send(&mainOnMessageSignal_);
-        TriggerPostTask();
     } else {
         HILOG_ERROR("worker:: worker main engine is nullptr.");
     }
@@ -720,11 +723,12 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
             {
                 std::lock_guard<std::recursive_mutex> lock(worker->liveStatusLock_);
                 if (worker->UpdateMainState(INACTIVE)) {
-                    uv_unref((uv_handle_t*)&worker->mainOnMessageSignal_);
-                    uv_close((uv_handle_t*)&worker->mainOnMessageSignal_, nullptr);
-
-                    uv_unref((uv_handle_t*)&worker->mainOnErrorSignal_);
-                    uv_close((uv_handle_t*)&worker->mainOnErrorSignal_, nullptr);
+                    if (!uv_is_closing((uv_handle_t*)&worker->mainOnMessageSignal_)) {
+                        uv_close((uv_handle_t*)&worker->mainOnMessageSignal_, nullptr);
+                    }
+                    if (!uv_is_closing((uv_handle_t*)&worker->mainOnErrorSignal_)) {
+                        uv_close((uv_handle_t*)&worker->mainOnErrorSignal_, nullptr);
+                    }
                     worker->ReleaseMainThreadContent();
                 }
                 if (!worker->IsRunning()) {
@@ -1093,8 +1097,15 @@ void Worker::CloseWorkerCallback()
 {
     CallWorkerFunction(0, nullptr, "onclose", true);
     // off worker inited environment
-    if (OHOS::CCRuntime::Worker::WorkerCore::offWorkerFunc != NULL) {
-        OHOS::CCRuntime::Worker::WorkerCore::offWorkerFunc(reinterpret_cast<NativeEngine*>(workerEnv_));
+    {
+        std::lock_guard<std::recursive_mutex> lock(liveStatusLock_);
+        if (MainIsStop()) {
+            return;
+        }
+        auto mainEngine = reinterpret_cast<NativeEngine*>(mainEnv_);
+        if (!mainEngine->CallOffWorkerFunc(reinterpret_cast<NativeEngine*>(workerEnv_))) {
+            HILOG_ERROR("worker:: CallOffWorkerFunc error");
+        }
     }
 }
 
@@ -1137,6 +1148,8 @@ void Worker::ReleaseWorkerThreadContent()
     // 3. clear message send to worker thread
     workerMessageQueue_.Clear(workerEnv_);
     // 4. delete NativeEngine created in worker thread
+    auto workerEngine = reinterpret_cast<NativeEngine*>(workerEnv_);
+    workerEngine->CloseAsyncWork();
     CloseHelp::DeletePointer(reinterpret_cast<NativeEngine*>(workerEnv_), false);
     workerEnv_ = nullptr;
 }

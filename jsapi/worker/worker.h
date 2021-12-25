@@ -25,7 +25,6 @@
 #include "native_engine/native_engine.h"
 #include "utils/log.h"
 #include "worker_helper.h"
-#include "worker_init.h"
 #include "worker_runner.h"
 
 namespace OHOS::CCRuntime::Worker {
@@ -100,7 +99,6 @@ public:
     static void MainOnError(const uv_async_t* req);
     static void WorkerOnMessage(const uv_async_t* req);
     static void ExecuteInThread(const void* data);
-    static bool PrepareForWorkerInstance(const Worker* worker);
 
     static napi_value PostMessage(napi_env env, napi_callback_info cbinfo);
     static napi_value PostMessageToMain(napi_env env, napi_callback_info cbinfo);
@@ -197,13 +195,6 @@ public:
         return false;
     }
 
-    void TriggerPostTask()
-    {
-        if (mainEnv_ != nullptr) {
-            return reinterpret_cast<NativeEngine*>(mainEnv_)->TriggerPostTask();
-        }
-    }
-
     bool MainIsStop() const
     {
         return mainState_.load(std::memory_order_acquire) == INACTIVE;
@@ -250,7 +241,7 @@ private:
 
     void ReleaseWorkerThreadContent();
     void ReleaseMainThreadContent();
-
+    bool PrepareForWorkerInstance();
     void ParentPortAddListenerInner(napi_env env, const char* type, const WorkerListener* listener);
     void ParentPortRemoveAllListenerInner();
     void ParentPortRemoveListenerInner(napi_env env, const char* type, napi_ref callback);
