@@ -28,12 +28,14 @@
 #include "worker_runner.h"
 
 namespace OHOS::CCRuntime::Worker {
+class Worker;
+
 class Worker {
 public:
     static const int8_t WORKERPARAMNUM = 2;
 
     enum RunnerState { STARTING, RUNNING, TERMINATEING, TERMINATED };
-    enum MainState { ACTIVE, INACTIVE };
+    enum HostState { ACTIVE, INACTIVE };
     enum ListenerMode { ONCE, PERMANENT };
 
     enum ScriptMode { CLASSIC, MODULE };
@@ -95,13 +97,13 @@ public:
     Worker(napi_env env, napi_ref thisVar);
     ~Worker();
 
-    static void MainOnMessage(const uv_async_t* req);
-    static void MainOnError(const uv_async_t* req);
+    static void HostOnMessage(const uv_async_t* req);
+    static void HostOnError(const uv_async_t* req);
     static void WorkerOnMessage(const uv_async_t* req);
     static void ExecuteInThread(const void* data);
 
     static napi_value PostMessage(napi_env env, napi_callback_info cbinfo);
-    static napi_value PostMessageToMain(napi_env env, napi_callback_info cbinfo);
+    static napi_value PostMessageToHost(napi_env env, napi_callback_info cbinfo);
     static napi_value Terminate(napi_env env, napi_callback_info cbinfo);
     static napi_value CloseWorker(napi_env env, napi_callback_info cbinfo);
     static napi_value On(napi_env env, napi_callback_info cbinfo);
@@ -129,7 +131,7 @@ public:
     void StartExecuteInThread(napi_env env, const char* script);
 
     bool UpdateWorkerState(RunnerState state);
-    bool UpdateMainState(MainState state);
+    bool UpdateHostState(HostState state);
 
     bool IsRunning() const
     {
@@ -178,26 +180,18 @@ public:
         return name_;
     }
 
-    uv_loop_t* GetMainLoop() const
-    {
-        if (mainEnv_ != nullptr) {
-            return reinterpret_cast<NativeEngine*>(mainEnv_)->GetUVLoop();
-        }
-        return nullptr;
-    }
-
     bool ClearWorkerTasks()
     {
-        if (mainEnv_ != nullptr) {
-            workerMessageQueue_.Clear(mainEnv_);
+        if (hostEnv_ != nullptr) {
+            workerMessageQueue_.Clear(hostEnv_);
             return true;
         }
         return false;
     }
 
-    bool MainIsStop() const
+    bool HostIsStop() const
     {
-        return mainState_.load(std::memory_order_acquire) == INACTIVE;
+        return hostState_.load(std::memory_order_acquire) == INACTIVE;
     }
 
     bool IsSameWorkerEnv(napi_env env) const
@@ -214,15 +208,15 @@ public:
 
 private:
     void WorkerOnMessageInner();
-    void MainOnMessageInner();
-    void MainOnErrorInner();
-    void MainOnMessageErrorInner();
+    void HostOnMessageInner();
+    void HostOnErrorInner();
+    void HostOnMessageErrorInner();
     void WorkerOnMessageErrorInner();
     void WorkerOnErrorInner(napi_value error);
 
     void HandleException();
     bool CallWorkerFunction(int argc, const napi_value* argv, const char* methodName, bool tryCatch);
-    void CallMainFunction(int argc, const napi_value* argv, const char* methodName) const;
+    void CallHostFunction(int argc, const napi_value* argv, const char* methodName) const;
 
     void HandleEventListeners(napi_env env, napi_value recv, size_t argc, const napi_value* argv, const char* type);
     void ParentPortHandleEventListeners(napi_env env, napi_value recv,
@@ -230,25 +224,26 @@ private:
     void TerminateInner();
 
     void PostMessageInner(MessageDataType data);
-    void PostMessageToMainInner(MessageDataType data);
+    void PostMessageToHostInner(MessageDataType data);
 
     void TerminateWorker();
     void CloseInner();
 
     void PublishWorkerOverSignal();
     void CloseWorkerCallback();
-    void CloseMainCallback() const;
+    void CloseHostCallback() const;
 
     void ReleaseWorkerThreadContent();
-    void ReleaseMainThreadContent();
+    void ReleaseHostThreadContent();
     bool PrepareForWorkerInstance();
     void ParentPortAddListenerInner(napi_env env, const char* type, const WorkerListener* listener);
     void ParentPortRemoveAllListenerInner();
     void ParentPortRemoveListenerInner(napi_env env, const char* type, napi_ref callback);
+    void PreparePandafile();
 
-    napi_env GetMainEnv() const
+    napi_env GetHostEnv() const
     {
-        return mainEnv_;
+        return hostEnv_;
     }
 
     napi_env GetWorkerEnv() const
@@ -261,18 +256,18 @@ private:
     ScriptMode scriptMode_ {CLASSIC};
 
     MessageQueue workerMessageQueue_ {};
-    MessageQueue mainMessageQueue_ {};
+    MessageQueue hostMessageQueue_ {};
     MessageQueue errorQueue_ {};
 
     uv_async_t workerOnMessageSignal_ {};
-    uv_async_t mainOnMessageSignal_ {};
-    uv_async_t mainOnErrorSignal_ {};
+    uv_async_t hostOnMessageSignal_ {};
+    uv_async_t hostOnErrorSignal_ {};
 
     std::atomic<RunnerState> runnerState_ {STARTING};
-    std::atomic<MainState> mainState_ {ACTIVE};
+    std::atomic<HostState> hostState_ {ACTIVE};
     std::unique_ptr<WorkerRunner> runner_ {};
 
-    napi_env mainEnv_ {nullptr};
+    napi_env hostEnv_ {nullptr};
     napi_env workerEnv_ {nullptr};
 
     napi_ref workerWrapper_ {nullptr};
