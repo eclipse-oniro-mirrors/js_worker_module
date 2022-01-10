@@ -37,7 +37,7 @@
     },
     "component": {
         "name": "js_worker_module",
-        "subsystem": "",
+        "subsystem": "ccruntime",
         "syscap": [],
         "features": [],
         "adapted_system_type": [],
@@ -48,7 +48,9 @@
             "third_party": []
         },
         "build": {
-            "sub_component": [],
+            "sub_component": [
+                "//base/compileruntime/js_worker_module/jsapi:jsapi_packages"
+            ],
             "inner_kits": [],
             "test": []
         }
