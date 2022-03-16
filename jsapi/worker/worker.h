@@ -271,7 +271,7 @@ private:
     napi_env hostEnv_ {nullptr};
     napi_env workerEnv_ {nullptr};
 
-    napi_ref workerWrapper_ {nullptr};
+    napi_ref workerRef_ {nullptr};
     napi_ref parentPort_ {nullptr};
 
     std::map<std::string, std::list<WorkerListener*>> eventListeners_ {};

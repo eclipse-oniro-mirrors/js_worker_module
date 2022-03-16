@@ -21,7 +21,7 @@ static std::list<Worker*> g_workers;
 static std::mutex g_workersMutex;
 
 Worker::Worker(napi_env env, napi_ref thisVar)
-    : hostEnv_(env), workerWrapper_(thisVar)
+    : hostEnv_(env), workerRef_(thisVar)
 {}
 
 void Worker::StartExecuteInThread(napi_env env, const char* script)
@@ -228,7 +228,7 @@ void Worker::HostOnErrorInner()
     }
     napi_value callback = nullptr;
     napi_value obj = nullptr;
-    napi_get_reference_value(hostEnv_, workerWrapper_, &obj);
+    napi_get_reference_value(hostEnv_, workerRef_, &obj);
     napi_get_named_property(hostEnv_, obj, "onerror", &callback);
     bool isCallable = NapiValueHelp::IsCallable(hostEnv_, callback);
     if (!isCallable) {
@@ -311,7 +311,7 @@ void Worker::HostOnMessageInner()
     }
     napi_value callback = nullptr;
     napi_value obj = nullptr;
-    napi_get_reference_value(hostEnv_, workerWrapper_, &obj);
+    napi_get_reference_value(hostEnv_, workerRef_, &obj);
     napi_get_named_property(hostEnv_, obj, "onmessage", &callback);
     bool isCallable = NapiValueHelp::IsCallable(hostEnv_, callback);
 
@@ -429,7 +429,7 @@ void Worker::HostOnMessageErrorInner()
         return;
     }
     napi_value obj = nullptr;
-    napi_get_reference_value(hostEnv_, workerWrapper_, &obj);
+    napi_get_reference_value(hostEnv_, workerRef_, &obj);
     CallHostFunction(0, nullptr, "onmessageerror");
     // handle listeners
     HandleEventListeners(hostEnv_, obj, 0, nullptr, "messageerror");
@@ -539,16 +539,12 @@ void Worker::PostMessageToHostInner(MessageDataType data)
 
 void Worker::PostMessageInner(MessageDataType data)
 {
-    if (IsTerminating()) {
-        HILOG_INFO("worker:: worker is terminating, will not handle andy worker.");
-        return;
-    }
     if (IsTerminated()) {
         HILOG_INFO("worker:: worker has been terminated.");
         return;
     }
     workerMessageQueue_.EnQueue(data);
-    if (IsRunning()) {
+    if (uv_is_active((uv_handle_t*)&workerOnMessageSignal_)) {
         uv_async_send(&workerOnMessageSignal_);
     }
 }
@@ -577,9 +573,10 @@ void Worker::TerminateInner()
         HILOG_INFO("worker:: worker is not in running");
         return;
     }
-    // 1. send null signal
-    PostMessageInner(NULL);
+    // 1. Update State
     UpdateWorkerState(TERMINATEING);
+    // 2. send null signal
+    PostMessageInner(NULL);
 }
 
 Worker::~Worker()
@@ -731,7 +728,7 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
             }
         },
         nullptr, nullptr);
-    napi_create_reference(env, thisVar, 1, &worker->workerWrapper_);
+    napi_create_reference(env, thisVar, 1, &worker->workerRef_);
     return thisVar;
 }
 
@@ -943,7 +940,7 @@ napi_value Worker::DispatchEvent(napi_env env, napi_callback_info cbinfo)
     }
 
     napi_value obj = nullptr;
-    napi_get_reference_value(env, worker->workerWrapper_, &obj);
+    napi_get_reference_value(env, worker->workerRef_, &obj);
     napi_value argv[1] = { args[0] };
 
     char* typeStr = NapiValueHelp::GetString(env, typeValue);
@@ -1109,7 +1106,7 @@ void Worker::CallHostFunction(size_t argc, const napi_value* argv, const char* m
     }
     napi_value callback = nullptr;
     napi_value obj = nullptr;
-    napi_get_reference_value(hostEnv_, workerWrapper_, &obj);
+    napi_get_reference_value(hostEnv_, workerRef_, &obj);
     napi_get_named_property(hostEnv_, obj, methodName, &callback);
     bool isCallable = NapiValueHelp::IsCallable(hostEnv_, callback);
     if (!isCallable) {
@@ -1155,14 +1152,14 @@ void Worker::ReleaseHostThreadContent()
     if (!HostIsStop()) {
         // 3. set thisVar's nativepointer be null
         napi_value thisVar = nullptr;
-        napi_get_reference_value(hostEnv_, workerWrapper_, &thisVar);
+        napi_get_reference_value(hostEnv_, workerRef_, &thisVar);
         Worker* worker = nullptr;
         napi_remove_wrap(hostEnv_, thisVar, (void**)&worker);
-        // 4. set workerWrapper_ be null
-        napi_delete_reference(hostEnv_, workerWrapper_);
+        // 4. set workerRef_ be null
+        napi_delete_reference(hostEnv_, workerRef_);
     }
     hostEnv_ = nullptr;
-    workerWrapper_ = nullptr;
+    workerRef_ = nullptr;
 }
 
 napi_value Worker::ParentPortAddEventListener(napi_env env, napi_callback_info cbinfo)
