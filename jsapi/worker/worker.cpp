@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021 Huawei Device Co., Ltd.
+ * Copyright (c) 2022 Huawei Device Co., Ltd.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -45,7 +45,11 @@ void Worker::StartExecuteInThread(napi_env env, const char* script)
     if (!runner_) {
         runner_ = std::make_unique<WorkerRunner>(WorkerStartCallback(ExecuteInThread, this));
     }
-    runner_->Execute(); // start a new thread
+    if (runner_) {
+        runner_->Execute(); // start a new thread
+    } else {
+        HILOG_ERROR("runner_ is nullptr");
+    }
 }
 
 void Worker::CloseInner()
@@ -394,7 +398,7 @@ void Worker::WorkerOnMessageInner()
     }
     MessageDataType data = nullptr;
     while (workerMessageQueue_.DeQueue(&data)) {
-        if (data == NULL || IsTerminating()) {
+        if (data == nullptr || IsTerminating()) {
             HILOG_INFO("worker:: worker reveive terminate signal");
             TerminateWorker();
             return;
@@ -475,11 +479,7 @@ napi_value Worker::PostMessage(napi_env env, napi_callback_info cbinfo)
         worker->HostOnMessageErrorInner();
         return nullptr;
     }
-
-    if (data != nullptr) {
-        worker->PostMessageInner(data);
-    }
-
+    worker->PostMessageInner(data);
     return NapiValueHelp::GetUndefinedValue(env);
 }
 
@@ -522,11 +522,7 @@ napi_value Worker::PostMessageToHost(napi_env env, napi_callback_info cbinfo)
         worker->WorkerOnMessageErrorInner();
         return nullptr;
     }
-
-    if (data != nullptr) {
-        worker->PostMessageToHostInner(data);
-    }
-
+    worker->PostMessageToHostInner(data);
     return NapiValueHelp::GetUndefinedValue(env);
 }
 
@@ -696,14 +692,7 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
             if (strcmp("classic", typeStr) == 0) {
                 worker->SetScriptMode(CLASSIC);
                 CloseHelp::DeletePointer(typeStr, true);
-            } else if (strcmp("module", typeStr) == 0) {
-                worker->SetScriptMode(MODULE);
-                napi_throw_error(env, nullptr, "unsupport module");
-                CloseHelp::DeletePointer(typeStr, true);
-                CloseHelp::DeletePointer(worker, false);
-                return nullptr;
             } else {
-                worker->SetScriptMode(MODULE);
                 napi_throw_error(env, nullptr, "unsupport module");
                 CloseHelp::DeletePointer(typeStr, true);
                 CloseHelp::DeletePointer(worker, false);
