@@ -29,8 +29,6 @@
 #include "worker_runner.h"
 
 namespace OHOS::CCRuntime::Worker {
-class Worker;
-
 class Worker {
 public:
     static const int8_t WORKERPARAMNUM = 2;
