@@ -328,14 +328,14 @@ void Worker::HostOnMessageInner()
         if (!isCallable) {
             // onmessage is not func, no need to continue
             HILOG_ERROR("worker:: worker onmessage is not a callable");
-            return;
+            continue;
         }
         // handle data, call worker onMessage function to handle.
         napi_value result = nullptr;
         napi_status status = napi_deserialize(hostEnv_, data, &result);
         if (status != napi_ok || result == nullptr) {
             HostOnMessageErrorInner();
-            return;
+            continue;
         }
         napi_value event = nullptr;
         napi_create_object(hostEnv_, &event);
@@ -397,8 +397,8 @@ void Worker::WorkerOnMessageInner()
         return;
     }
     MessageDataType data = nullptr;
-    while (workerMessageQueue_.DeQueue(&data)) {
-        if (data == nullptr || IsTerminating()) {
+    while (!IsTerminated() && workerMessageQueue_.DeQueue(&data)) {
+        if (data == nullptr) {
             HILOG_INFO("worker:: worker reveive terminate signal");
             TerminateWorker();
             return;
@@ -407,7 +407,7 @@ void Worker::WorkerOnMessageInner()
         napi_status status = napi_deserialize(workerEnv_, data, &result);
         if (status != napi_ok || result == nullptr) {
             WorkerOnMessageErrorInner();
-            return;
+            continue;
         }
 
         napi_value event = nullptr;
@@ -416,8 +416,7 @@ void Worker::WorkerOnMessageInner()
         napi_value argv[1] = { event };
         bool callFeedback = CallWorkerFunction(1, argv, "onmessage", true);
         if (!callFeedback) {
-            // onmessage is not function, exit the loop directly.
-            return;
+            HILOG_ERROR("worker:: call WorkerGlobalScope onmessage error");
         }
     }
 }
@@ -704,7 +703,6 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
         napi_throw_error(env, nullptr, "worker script create error, please check.");
         return nullptr;
     }
-    worker->StartExecuteInThread(env, script);
     napi_wrap(
         env, thisVar, worker,
         [](napi_env env, void* data, void* hint) {
@@ -729,6 +727,7 @@ napi_value Worker::WorkerConstructor(napi_env env, napi_callback_info cbinfo)
         },
         nullptr, nullptr);
     napi_create_reference(env, thisVar, 1, &worker->workerRef_);
+    worker->StartExecuteInThread(env, script);
     return thisVar;
 }
 
@@ -1078,6 +1077,7 @@ bool Worker::CallWorkerFunction(size_t argc, const napi_value* argv, const char*
     if (tryCatch && callbackResult == nullptr) {
         // handle exception
         HandleException();
+        return false;
     }
     return true;
 }
