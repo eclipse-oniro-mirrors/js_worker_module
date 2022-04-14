@@ -437,9 +437,7 @@ napi_value Worker::PostMessage(napi_env env, napi_callback_info cbinfo)
         return nullptr;
     }
 
-    if (data != nullptr) {
-        worker->PostMessageInner(data);
-    }
+    worker->PostMessageInner(data);
 
     return NapiValueHelp::GetUndefinedValue(env);
 }
