@@ -95,6 +95,10 @@ bool Worker::PrepareForWorkerInstance()
             HILOG_ERROR("worker:: CallWorkerAsyncWorkFunc error");
         }
         // 2. init worker environment
+#if !defined(WINDOWS_PLATFORM) && !defined(MAC_PLATFORM)
+        workerEngine->SetDebuggerPostTaskFunc(
+            std::bind(&Worker::DebuggerOnPostTask, this, std::placeholders::_1));
+#endif
         if (!hostEngine->CallInitWorkerFunc(workerEngine)) {
             HILOG_ERROR("worker:: CallInitWorkerFunc error");
             return false;
@@ -194,6 +198,10 @@ void Worker::ExecuteInThread(const void* data)
     // 2. add some preparation for the worker
     if (worker->PrepareForWorkerInstance()) {
         uv_async_init(loop, &worker->workerOnMessageSignal_, reinterpret_cast<uv_async_cb>(Worker::WorkerOnMessage));
+#if !defined(WINDOWS_PLATFORM) && !defined(MAC_PLATFORM)
+        uv_async_init(loop, &worker->debuggerOnPostTaskSignal_, reinterpret_cast<uv_async_cb>(
+            Worker::HandleDebuggerTask));
+#endif
         worker->UpdateWorkerState(RUNNING);
         // in order to invoke worker send before subThread start
         uv_async_send(&worker->workerOnMessageSignal_);
@@ -259,6 +267,31 @@ void Worker::HostOnError(const uv_async_t* req)
     worker->HostOnErrorInner();
     worker->TerminateInner();
 }
+
+#if !defined(WINDOWS_PLATFORM) && !defined(MAC_PLATFORM)
+void Worker::HandleDebuggerTask(const uv_async_t* req)
+{
+    Worker* worker = Helper::DereferenceHelp::DereferenceOf(&Worker::debuggerOnPostTaskSignal_, req);
+    if (worker == nullptr) {
+        HILOG_ERROR("worker::worker is null");
+        return;
+    }
+
+    worker->debuggerTask_();
+}
+
+void Worker::DebuggerOnPostTask(std::function<void()>&& task)
+{
+    if (IsTerminated()) {
+        HILOG_ERROR("worker:: worker has been terminated.");
+        return;
+    }
+    if (uv_is_active((uv_handle_t*)&debuggerOnPostTaskSignal_)) {
+        debuggerTask_ = std::move(task);
+        uv_async_send(&debuggerOnPostTaskSignal_);
+    }
+}
+#endif
 
 void Worker::WorkerOnMessage(const uv_async_t* req)
 {
@@ -349,6 +382,9 @@ void Worker::TerminateWorker()
 {
     // when there is no active handle, worker loop will stop automatic.
     uv_close(reinterpret_cast<uv_handle_t*>(&workerOnMessageSignal_), nullptr);
+#if !defined(WINDOWS_PLATFORM) && !defined(MAC_PLATFORM)
+    uv_close(reinterpret_cast<uv_handle_t*>(&debuggerOnPostTaskSignal_), nullptr);
+#endif
     CloseWorkerCallback();
     uv_loop_t* loop = GetWorkerLoop();
     if (loop != nullptr) {
