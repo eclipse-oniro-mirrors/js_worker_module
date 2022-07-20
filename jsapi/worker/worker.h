@@ -242,6 +242,11 @@ private:
     void ParentPortRemoveListenerInner(napi_env env, const char* type, napi_ref callback);
     void PreparePandafile();
 
+#if !defined(WINDOWS_PLATFORM) && !defined(MAC_PLATFORM)
+    static void HandleDebuggerTask(const uv_async_t* req);
+    void DebuggerOnPostTask(std::function<void()>&& task);
+#endif
+
     napi_env GetHostEnv() const
     {
         return hostEnv_;
@@ -263,6 +268,10 @@ private:
     uv_async_t workerOnMessageSignal_ {};
     uv_async_t hostOnMessageSignal_ {};
     uv_async_t hostOnErrorSignal_ {};
+#if !defined(WINDOWS_PLATFORM) && !defined(MAC_PLATFORM)
+    uv_async_t debuggerOnPostTaskSignal_ {};
+    std::function<void()> debuggerTask_;
+#endif
 
     std::atomic<RunnerState> runnerState_ {STARTING};
     std::atomic<HostState> hostState_ {ACTIVE};
